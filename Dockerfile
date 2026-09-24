@@ -5,12 +5,11 @@ WORKDIR /app
 # Copy your repository files into the container
 COPY . .
 
-# Install the server package
-RUN pip install --no-cache-dir .
+# Install the server package and the HTTP web frameworks
+RUN pip install --no-cache-dir . uvicorn starlette
 
 # Expose the port Cloud Run will route traffic to
 EXPOSE 8080
 
-# Command to run your modified HTTP-enabled MCP server
-# (Adjust this command to match your specific HTTP implementation)
-CMD ["python", "-m", "analytics_mcp", "--transport", "http", "--port", "8080"]
+# Command to run the new HTTP wrapper
+CMD ["python", "app.py"]
