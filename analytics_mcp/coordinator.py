@@ -87,65 +87,84 @@ tool_map = {t.name: t for t in tools}
 
 app = FastMCP("Google Analytics MCP Server")
 
-def sanitize_mcp_schema_properties(node: dict) -> None:
-    """Ensure additionalProperties is a boolean value to satisfy certain MCP clients."""
-    if not isinstance(node, dict):
-        return
-    if "additionalProperties" in node:
-        val = node["additionalProperties"]
-        if not isinstance(val, bool):
-            node["additionalProperties"] = True
-    for key, child in node.items():
-        if isinstance(child, dict):
-            sanitize_mcp_schema_properties(child)
-        elif isinstance(child, list):
-            for element in child:
-                if isinstance(element, dict):
-                    sanitize_mcp_schema_properties(element)
+def sanitize_mcp_schema(schema: dict) -> dict:
+    if not isinstance(schema, dict):
+        return schema
 
-# 1. Register each ADK tool with FastMCP
+    cleaned = {}
+
+    # Collapse anyOf / oneOf unions containing 'null'
+    raw_any_of = schema.get("anyOf") or schema.get("oneOf")
+    if isinstance(raw_any_of, list):
+        non_nulls = [
+            item for item in raw_any_of 
+            if isinstance(item, dict) and item.get("type") != "null"
+        ]
+        if len(non_nulls) == 1:
+            collapsed = sanitize_mcp_schema(non_nulls[0])
+            for k, v in collapsed.items():
+                cleaned[k] = v
+
+    for key, value in schema.items():
+        if key in ("anyOf", "oneOf"):
+            if "type" in cleaned:
+                continue
+            non_nulls = [
+                item for item in value 
+                if isinstance(item, dict) and item.get("type") != "null"
+            ]
+            if len(non_nulls) == 1:
+                collapsed = sanitize_mcp_schema(non_nulls[0])
+                for k, v in collapsed.items():
+                    if k not in cleaned:
+                        cleaned[k] = v
+            else:
+                cleaned[key] = [
+                    sanitize_mcp_schema(item) if isinstance(item, dict) else item 
+                    for item in non_nulls
+                ]
+        elif key == "additionalProperties":
+            cleaned[key] = value if isinstance(value, bool) else False
+        elif key == "default" and value is None:
+            continue
+        elif isinstance(value, dict):
+            cleaned[key] = sanitize_mcp_schema(value)
+        elif isinstance(value, list):
+            cleaned[key] = [
+                sanitize_mcp_schema(item) if isinstance(item, dict) else item 
+                for item in value
+            ]
+        else:
+            if key not in cleaned or value is not None:
+                cleaned[key] = value
+
+    if cleaned.get("type") == "object" and "properties" in cleaned:
+        if "required" not in cleaned or not isinstance(cleaned["required"], list):
+            cleaned["required"] = []
+
+    return cleaned
+
+
+# 1. Register tools with FastMCP
 for tool_name, adk_tool in tool_map.items():
     app.add_tool(adk_tool.func, name=tool_name, description=adk_tool.description)
 
-# 2. Override to_mcp_tool on each registered tool so FastMCP outputs the cleaned schema
+# 2. Patch to_mcp_tool dynamically without breaking Pydantic attributes
 for tool_name, tool in app._tool_manager._tools.items():
-    # Copy raw schema dictionary from FastMCP
-    raw_schema = dict(tool.parameters)
+    orig_to_mcp = tool.to_mcp_tool
 
-    if not raw_schema or raw_schema == {}:
-        raw_schema = {"type": "object", "properties": {}}
+    def make_patched_to_mcp(original_fn):
+        def patched_to_mcp_tool(self, **overrides):
+            mcp_tool = original_fn(**overrides)
+            if isinstance(mcp_tool, dict) and "inputSchema" in mcp_tool:
+                mcp_tool["inputSchema"] = sanitize_mcp_schema(mcp_tool["inputSchema"])
+            elif hasattr(mcp_tool, "inputSchema"):
+                raw_schema = getattr(mcp_tool, "inputSchema")
+                if hasattr(raw_schema, "model_dump"):
+                    raw_schema = raw_schema.model_dump()
+                sanitized = sanitize_mcp_schema(raw_schema)
+                object.__setattr__(mcp_tool, "inputSchema", sanitized)
+            return mcp_tool
+        return patched_to_mcp_tool
 
-    # Strip out anyOf / null types that break Gemini Enterprise schema parsing
-    props = raw_schema.get("properties", {})
-    for prop_name, prop in list(props.items()):
-        if isinstance(prop, dict) and "anyOf" in prop:
-            valid_types = [t.get("type") for t in prop["anyOf"] if isinstance(t, dict) and t.get("type") != "null"]
-            if valid_types:
-                prop["type"] = valid_types[0]
-            del prop["anyOf"]
-
-    # Ensure additionalProperties is a boolean
-    sanitize_mcp_schema_properties(raw_schema)
-
-    # Set explicit required fields for GA reporting tools
-    if tool_name == "run_report":
-        raw_schema["required"] = ["property_id", "date_ranges", "dimensions", "metrics"]
-    elif tool_name == "run_realtime_report":
-        raw_schema["required"] = ["property_id", "dimensions", "metrics"]
-    elif tool_name == "run_conversions_report":
-        raw_schema["required"] = ["property_id", "date_ranges", "dimensions", "metrics", "conversion_spec"]
-
-    # Also update parameters directly
-    tool.parameters = raw_schema
-
-    # Override tool output method using object.__setattr__ to bypass Pydantic validation
-    def make_to_mcp(t_name, t_desc, clean_schema):
-        def to_mcp_tool():
-            return mcp_types.Tool(
-                name=t_name,
-                description=t_desc,
-                inputSchema=clean_schema
-            )
-        return to_mcp_tool
-
-    object.__setattr__(tool, "to_mcp_tool", make_to_mcp(tool.name, tool.description or "", raw_schema))
+    object.__setattr__(tool, "to_mcp_tool", types.MethodType(make_patched_to_mcp(orig_to_mcp), tool))
