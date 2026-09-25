@@ -85,8 +85,7 @@ tools = [
 
 tool_map = {t.name: t for t in tools}
 
-app = Server(
-    name="Google Analytics MCP Server",
+app = FastMCP("Google Analytics MCP Server"),
 )
 
 mcp_tools = [adk_to_mcp_tool_type(tool) for tool in tools]
@@ -152,37 +151,8 @@ for tool in mcp_tools:
         ]
 
 
-@app.list_tools()
-async def list_tools() -> list[mcp_types.Tool]:
-    return mcp_tools
-
-
-@app.call_tool()
-async def call_mcp_tool(name: str, arguments: dict) -> list[mcp_types.Content]:
-    if name in tool_map:
-        tool = tool_map[name]
-        try:
-            adk_tool_response = await tool.run_async(
-                args=arguments,
-                tool_context=None,
-            )
-            # Serialize the ADK tool response to JSON for MCP response
-            response_text = json.dumps(adk_tool_response, indent=2)
-            # MCP expects a list of mcp_types.Content parts
-            return [mcp_types.TextContent(type="text", text=response_text)]
-
-        except Exception as e:
-            print(
-                f"MCP Server: Error executing ADK tool '{name}': {e}",
-                file=sys.stderr,
-            )
-            # Return an error message in MCP format
-            error_text = json.dumps(
-                {"error": f"Failed to execute tool '{name}': {str(e)}"}
-            )
-            return [mcp_types.TextContent(type="text", text=error_text)]
-
-    error_text = json.dumps(
-        {"error": f"Tool '{name}' not implemented by this server."}
-    )
-    return [mcp_types.TextContent(type="text", text=error_text)]
+# Register each ADK tool with FastMCP
+for tool_name, adk_tool in tool_map.items():
+    # FastMCP allows you to add functions directly. 
+    # We pass the underlying async run method of your ADK tools.
+    app.add_tool(adk_tool.run_async, name=tool_name, description=adk_tool.description)
