@@ -13,7 +13,7 @@ async def health_check(request):
 # Mount the FastMCP ASGI application
 app = Starlette(routes=[
     Route("/health", endpoint=health_check, methods=["GET"]),
-    Mount("/mcp", app=mcp_app.get_asgi_app())
+    Mount("/mcp", app=mcp_app.streamable_http_app())
 ])
 
 if __name__ == "__main__":
