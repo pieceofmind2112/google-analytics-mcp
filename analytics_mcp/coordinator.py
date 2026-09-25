@@ -87,26 +87,14 @@ tool_map = {t.name: t for t in tools}
 
 app = FastMCP("Google Analytics MCP Server")
 
-
-mcp_tools = [adk_to_mcp_tool_type(tool) for tool in tools]
-
-
 def sanitize_mcp_schema_properties(node: dict) -> None:
-    """Ensure additionalProperties is a boolean value to satisfy certain MCP clients.
-
-    This addresses issues with clients like Claude Desktop that fail when
-    additionalProperties is a schema object instead of a boolean.
-    """
+    """Ensure additionalProperties is a boolean value to satisfy certain MCP clients."""
     if not isinstance(node, dict):
         return
-
-    # Check and update the current node
     if "additionalProperties" in node:
         val = node["additionalProperties"]
         if not isinstance(val, bool):
             node["additionalProperties"] = True
-
-    # Traverse children
     for key, child in node.items():
         if isinstance(child, dict):
             sanitize_mcp_schema_properties(child)
@@ -115,54 +103,31 @@ def sanitize_mcp_schema_properties(node: dict) -> None:
                 if isinstance(element, dict):
                     sanitize_mcp_schema_properties(element)
 
-
-# Update the inputSchema for tools that do not have parameters.
-# TODO: This is a bug in the ADK and can be removed once it is fixed.
-# https://github.com/google/adk-python/issues/948
-for tool in mcp_tools:
-    # Check if inputSchema is empty
-    if tool.inputSchema == {}:
-        tool.inputSchema = {"type": "object", "properties": {}}
-    # Fix union type hints generating spurious "type": "null"
-    for prop in tool.inputSchema.get("properties", {}).values():
-        if "anyOf" in prop and prop.get("type") == "null":
-            del prop["type"]
-
-for tool in mcp_tools:
-    # Check if inputSchema is empty
-    if tool.inputSchema == {}:
-        tool.inputSchema = {"type": "object", "properties": {}}
-        
-    # Fix union type hints generating spurious "type": "null"
-    for prop in tool.inputSchema.get("properties", {}).values():
-        if "anyOf" in prop and prop.get("type") == "null":
-            del prop["type"]
-            
-    # Ensure additionalProperties is compatible with all MCP clients
-    sanitize_mcp_schema_properties(tool.inputSchema)
-
-    # Explicitly mark required fields for reporting tools to guide the LLM
-    if tool.name == "run_report":
-        tool.inputSchema["required"] = [
-            "property_id",
-            "date_ranges",
-            "dimensions",
-            "metrics",
-        ]
-    elif tool.name == "run_realtime_report":
-        tool.inputSchema["required"] = ["property_id", "dimensions", "metrics"]
-    elif tool.name == "run_conversions_report":
-        tool.inputSchema["required"] = [
-            "property_id",
-            "date_ranges",
-            "dimensions",
-            "metrics",
-            "conversion_spec",
-        ]
-
-
-# Register each ADK tool with FastMCP
+# 1. Register each ADK tool with FastMCP first
 for tool_name, adk_tool in tool_map.items():
-    # Pass the underlying raw function (.func) so FastMCP/Pydantic
-    # can generate JSON schemas from primitive python types.
     app.add_tool(adk_tool.func, name=tool_name, description=adk_tool.description)
+
+# 2. Modify the schemas directly on FastMCP's registered tools
+for tool_name, tool in app._tool_manager._tools.items():
+    schema = tool.parameters
+
+    if not schema or schema == {}:
+        schema = {"type": "object", "properties": {}}
+
+    # Fix union type hints generating spurious "type": "null"
+    for prop in schema.get("properties", {}).values():
+        if "anyOf" in prop and prop.get("type") == "null":
+            del prop["type"]
+
+    # Ensure additionalProperties is compatible with all MCP clients
+    sanitize_mcp_schema_properties(schema)
+
+    # Explicitly mark required fields for reporting tools
+    if tool_name == "run_report":
+        schema["required"] = ["property_id", "date_ranges", "dimensions", "metrics"]
+    elif tool_name == "run_realtime_report":
+        schema["required"] = ["property_id", "dimensions", "metrics"]
+    elif tool_name == "run_conversions_report":
+        schema["required"] = ["property_id", "date_ranges", "dimensions", "metrics", "conversion_spec"]
+
+    tool.parameters = schema
