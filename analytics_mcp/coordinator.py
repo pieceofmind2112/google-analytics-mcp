@@ -151,21 +151,22 @@ def sanitize_mcp_schema(schema: dict) -> dict:
 for tool_name, adk_tool in tool_map.items():
     app.add_tool(adk_tool.func, name=tool_name, description=adk_tool.description)
 
-# 2. Sanitize internal FastMCP tool schemas directly
+# Intercept to_mcp_tool directly so FastMCP's protocol handlers return clean schemas
 for tool_name, tool in app._tool_manager._tools.items():
-    if hasattr(tool, "parameters") and isinstance(tool.parameters, dict):
-        tool.parameters = sanitize_mcp_schema(tool.parameters)
+    orig_to_mcp = tool.to_mcp_tool
 
-# 3. Intercept app.list_tools to ensure inputSchema sent to MCP clients is clean
-_orig_list_tools = app.list_tools
+    def make_patched_to_mcp(original_fn):
+        def patched_to_mcp_tool(self, **overrides):
+            mcp_tool = original_fn(**overrides)
+            if isinstance(mcp_tool, dict) and "inputSchema" in mcp_tool:
+                mcp_tool["inputSchema"] = sanitize_mcp_schema(mcp_tool["inputSchema"])
+            elif hasattr(mcp_tool, "inputSchema"):
+                raw = getattr(mcp_tool, "inputSchema")
+                if hasattr(raw, "model_dump"):
+                    raw = raw.model_dump()
+                sanitized = sanitize_mcp_schema(raw)
+                object.__setattr__(mcp_tool, "inputSchema", sanitized)
+            return mcp_tool
+        return patched_to_mcp_tool
 
-
-async def sanitized_list_tools():
-    tools = await _orig_list_tools()
-    for t in tools:
-        if hasattr(t, "inputSchema") and isinstance(t.inputSchema, dict):
-            object.__setattr__(t, "inputSchema", sanitize_mcp_schema(t.inputSchema))
-    return tools
-
-
-app.list_tools = sanitized_list_tools
+    object.__setattr__(tool, "to_mcp_tool", types.MethodType(make_patched_to_mcp(orig_to_mcp), tool))
