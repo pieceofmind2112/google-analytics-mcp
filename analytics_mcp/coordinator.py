@@ -135,7 +135,10 @@ for tool_name, tool in app._tool_manager._tools.items():
     elif tool_name == "run_conversions_report":
         raw_schema["required"] = ["property_id", "date_ranges", "dimensions", "metrics", "conversion_spec"]
 
-    # Override tool output method directly
+    # Also update parameters directly
+    tool.parameters = raw_schema
+
+    # Override tool output method using object.__setattr__ to bypass Pydantic validation
     def make_to_mcp(t_name, t_desc, clean_schema):
         def to_mcp_tool():
             return mcp_types.Tool(
@@ -145,4 +148,4 @@ for tool_name, tool in app._tool_manager._tools.items():
             )
         return to_mcp_tool
 
-    tool.to_mcp_tool = make_to_mcp(tool.name, tool.description or "", raw_schema)
+    object.__setattr__(tool, "to_mcp_tool", make_to_mcp(tool.name, tool.description or "", raw_schema))
