@@ -103,31 +103,46 @@ def sanitize_mcp_schema_properties(node: dict) -> None:
                 if isinstance(element, dict):
                     sanitize_mcp_schema_properties(element)
 
-# 1. Register each ADK tool with FastMCP first
+# 1. Register each ADK tool with FastMCP
 for tool_name, adk_tool in tool_map.items():
     app.add_tool(adk_tool.func, name=tool_name, description=adk_tool.description)
 
-# 2. Modify the schemas directly on FastMCP's registered tools
+# 2. Override to_mcp_tool on each registered tool so FastMCP outputs the cleaned schema
 for tool_name, tool in app._tool_manager._tools.items():
-    schema = tool.parameters
+    # Copy raw schema dictionary from FastMCP
+    raw_schema = dict(tool.parameters)
 
-    if not schema or schema == {}:
-        schema = {"type": "object", "properties": {}}
+    if not raw_schema or raw_schema == {}:
+        raw_schema = {"type": "object", "properties": {}}
 
-    # Fix union type hints generating spurious "type": "null"
-    for prop in schema.get("properties", {}).values():
-        if "anyOf" in prop and prop.get("type") == "null":
-            del prop["type"]
+    # Strip out anyOf / null types that break Gemini Enterprise schema parsing
+    props = raw_schema.get("properties", {})
+    for prop_name, prop in list(props.items()):
+        if isinstance(prop, dict) and "anyOf" in prop:
+            valid_types = [t.get("type") for t in prop["anyOf"] if isinstance(t, dict) and t.get("type") != "null"]
+            if valid_types:
+                prop["type"] = valid_types[0]
+            del prop["anyOf"]
 
-    # Ensure additionalProperties is compatible with all MCP clients
-    sanitize_mcp_schema_properties(schema)
+    # Ensure additionalProperties is a boolean
+    sanitize_mcp_schema_properties(raw_schema)
 
-    # Explicitly mark required fields for reporting tools
+    # Set explicit required fields for GA reporting tools
     if tool_name == "run_report":
-        schema["required"] = ["property_id", "date_ranges", "dimensions", "metrics"]
+        raw_schema["required"] = ["property_id", "date_ranges", "dimensions", "metrics"]
     elif tool_name == "run_realtime_report":
-        schema["required"] = ["property_id", "dimensions", "metrics"]
+        raw_schema["required"] = ["property_id", "dimensions", "metrics"]
     elif tool_name == "run_conversions_report":
-        schema["required"] = ["property_id", "date_ranges", "dimensions", "metrics", "conversion_spec"]
+        raw_schema["required"] = ["property_id", "date_ranges", "dimensions", "metrics", "conversion_spec"]
 
-    tool.parameters = schema
+    # Override tool output method directly
+    def make_to_mcp(t_name, t_desc, clean_schema):
+        def to_mcp_tool():
+            return mcp_types.Tool(
+                name=t_name,
+                description=t_desc,
+                inputSchema=clean_schema
+            )
+        return to_mcp_tool
+
+    tool.to_mcp_tool = make_to_mcp(tool.name, tool.description or "", raw_schema)
