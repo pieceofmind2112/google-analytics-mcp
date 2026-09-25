@@ -23,7 +23,7 @@ import json
 import sys
 from json import tool
 from mcp import types as mcp_types  # Use alias to avoid conflict
-from mcp.server.lowlevel import Server
+from mcp.server.fastmcp import FastMCP
 
 # ADK Tool Imports
 from google.adk.tools.function_tool import FunctionTool
