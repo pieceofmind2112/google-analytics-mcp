@@ -128,6 +128,16 @@ for tool in mcp_tools:
         if "anyOf" in prop and prop.get("type") == "null":
             del prop["type"]
 
+for tool in mcp_tools:
+    # Check if inputSchema is empty
+    if tool.inputSchema == {}:
+        tool.inputSchema = {"type": "object", "properties": {}}
+        
+    # Fix union type hints generating spurious "type": "null"
+    for prop in tool.inputSchema.get("properties", {}).values():
+        if "anyOf" in prop and prop.get("type") == "null":
+            del prop["type"]
+            
     # Ensure additionalProperties is compatible with all MCP clients
     sanitize_mcp_schema_properties(tool.inputSchema)
 
@@ -153,6 +163,6 @@ for tool in mcp_tools:
 
 # Register each ADK tool with FastMCP
 for tool_name, adk_tool in tool_map.items():
-    # FastMCP allows you to add functions directly. 
-    # We pass the underlying async run method of your ADK tools.
-    app.add_tool(adk_tool.run_async, name=tool_name, description=adk_tool.description)
+    # Pass the underlying raw function (.func) so FastMCP/Pydantic
+    # can generate JSON schemas from primitive python types.
+    app.add_tool(adk_tool.func, name=tool_name, description=adk_tool.description)
