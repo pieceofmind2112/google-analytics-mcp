@@ -85,7 +85,7 @@ tools = [
 
 tool_map = {t.name: t for t in tools}
 
-app = FastMCP("Google Analytics MCP Server"),
+app = FastMCP("Google Analytics MCP Server")
 
 
 mcp_tools = [adk_to_mcp_tool_type(tool) for tool in tools]
