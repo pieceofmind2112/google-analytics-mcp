@@ -15,7 +15,7 @@ async def health_check(request):
 app = Starlette(routes=[
     Route("/health", endpoint=health_check, methods=["GET"]),
     # The MCP SDK automatically handles the Streamable HTTP transport here
-    Mount("/mcp", app=mcp.streamable_http_app())
+Mount("/mcp", app=mcp.get_asgi_app())
 ])
 
 if __name__ == "__main__":
