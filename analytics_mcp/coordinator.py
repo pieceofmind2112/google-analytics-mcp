@@ -11,17 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Module declaring the singleton MCP server.
-
-The singleton allows other modules to register their tools with the same MCP
-server.
+The singleton allows other modules to register their tools with the same MCP server.
 """
 
 # MCP Server Imports
 import json
 import sys
-from json import tool
 from mcp import types as mcp_types  # Use alias to avoid conflict
 from mcp.server.fastmcp import FastMCP
 
@@ -57,14 +53,17 @@ from analytics_mcp.tools.reporting.conversions import (
 
 run_report_with_description = FunctionTool(run_report)
 run_report_with_description.description = _run_report_description()
+
 run_realtime_report_with_description = FunctionTool(run_realtime_report)
 run_realtime_report_with_description.description = (
     _run_realtime_report_description()
 )
+
 run_funnel_report_with_description = FunctionTool(run_funnel_report)
 run_funnel_report_with_description.description = (
     _run_funnel_report_description()
 )
+
 run_conversions_report_with_description = FunctionTool(run_conversions_report)
 run_conversions_report_with_description.description = (
     _run_conversions_report_description()
@@ -87,6 +86,7 @@ tool_map = {t.name: t for t in tools}
 
 app = FastMCP("Google Analytics MCP Server")
 
+
 def sanitize_mcp_schema(schema: dict) -> dict:
     if not isinstance(schema, dict):
         return schema
@@ -97,7 +97,8 @@ def sanitize_mcp_schema(schema: dict) -> dict:
     raw_any_of = schema.get("anyOf") or schema.get("oneOf")
     if isinstance(raw_any_of, list):
         non_nulls = [
-            item for item in raw_any_of 
+            item
+            for item in raw_any_of
             if isinstance(item, dict) and item.get("type") != "null"
         ]
         if len(non_nulls) == 1:
@@ -110,7 +111,8 @@ def sanitize_mcp_schema(schema: dict) -> dict:
             if "type" in cleaned:
                 continue
             non_nulls = [
-                item for item in value 
+                item
+                for item in value
                 if isinstance(item, dict) and item.get("type") != "null"
             ]
             if len(non_nulls) == 1:
@@ -120,7 +122,7 @@ def sanitize_mcp_schema(schema: dict) -> dict:
                         cleaned[k] = v
             else:
                 cleaned[key] = [
-                    sanitize_mcp_schema(item) if isinstance(item, dict) else item 
+                    sanitize_mcp_schema(item) if isinstance(item, dict) else item
                     for item in non_nulls
                 ]
         elif key == "additionalProperties":
@@ -131,7 +133,7 @@ def sanitize_mcp_schema(schema: dict) -> dict:
             cleaned[key] = sanitize_mcp_schema(value)
         elif isinstance(value, list):
             cleaned[key] = [
-                sanitize_mcp_schema(item) if isinstance(item, dict) else item 
+                sanitize_mcp_schema(item) if isinstance(item, dict) else item
                 for item in value
             ]
         else:
@@ -149,22 +151,21 @@ def sanitize_mcp_schema(schema: dict) -> dict:
 for tool_name, adk_tool in tool_map.items():
     app.add_tool(adk_tool.func, name=tool_name, description=adk_tool.description)
 
-# 2. Patch to_mcp_tool dynamically without breaking Pydantic attributes
+# 2. Sanitize internal FastMCP tool schemas directly
 for tool_name, tool in app._tool_manager._tools.items():
-    orig_to_mcp = tool.to_mcp_tool
+    if hasattr(tool, "parameters") and isinstance(tool.parameters, dict):
+        tool.parameters = sanitize_mcp_schema(tool.parameters)
 
-    def make_patched_to_mcp(original_fn):
-        def patched_to_mcp_tool(self, **overrides):
-            mcp_tool = original_fn(**overrides)
-            if isinstance(mcp_tool, dict) and "inputSchema" in mcp_tool:
-                mcp_tool["inputSchema"] = sanitize_mcp_schema(mcp_tool["inputSchema"])
-            elif hasattr(mcp_tool, "inputSchema"):
-                raw_schema = getattr(mcp_tool, "inputSchema")
-                if hasattr(raw_schema, "model_dump"):
-                    raw_schema = raw_schema.model_dump()
-                sanitized = sanitize_mcp_schema(raw_schema)
-                object.__setattr__(mcp_tool, "inputSchema", sanitized)
-            return mcp_tool
-        return patched_to_mcp_tool
+# 3. Intercept app.list_tools to ensure inputSchema sent to MCP clients is clean
+_orig_list_tools = app.list_tools
 
-    object.__setattr__(tool, "to_mcp_tool", types.MethodType(make_patched_to_mcp(orig_to_mcp), tool))
+
+async def sanitized_list_tools():
+    tools = await _orig_list_tools()
+    for t in tools:
+        if hasattr(t, "inputSchema") and isinstance(t.inputSchema, dict):
+            object.__setattr__(t, "inputSchema", sanitize_mcp_schema(t.inputSchema))
+    return tools
+
+
+app.list_tools = sanitized_list_tools
